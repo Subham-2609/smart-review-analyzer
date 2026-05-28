@@ -9,49 +9,105 @@ from bs4 import BeautifulSoup
 def setup_driver():
     """Configures an ethical, headless Chrome browser."""
     chrome_options = Options()
-    # Run in the background without opening a visible window
-    chrome_options.add_argument("--headless")
-    
-    # Identify our bot transparently
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 SmartReviewBot/1.0")
-    
-    # Bypass simple security blocks
+    # chrome_options.add_argument("--headless")
+    # Identify as a standard desktop Chrome user
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_options)
-    
     return driver
 
 def fetch_page_source(url):
     """Fetches the HTML of the target URL with human-like delays."""
-    print(f"Initializing connection to: {url}")
+    print(f"\n[+] Initializing connection to: {url}")
     driver = setup_driver()
     
     try:
-        # Introduce a randomized ethical delay (2 to 5 seconds)
         delay = random.uniform(2.0, 5.0)
-        print(f"Pacing request. Waiting {delay:.2f} seconds...")
+        print(f"[+] Pacing request. Waiting {delay:.2f} seconds...")
         time.sleep(delay)
         
         driver.get(url)
+        time.sleep(3) # Wait for JavaScript to load
         
-        # Wait a moment for JavaScript reviews to render
-        time.sleep(3) 
-        
-        html = driver.page_source
-        return html
-        
+        return driver.page_source
     finally:
         driver.quit()
-        print("Browser session closed securely.")
+
+def parse_flipkart_reviews(product_url):
+    """Transforms URL and extracts reviews using Structural Anchors."""
+    
+    if "/p/" in product_url:
+        review_url = product_url.replace("/p/", "/product-reviews/")
+    else:
+        review_url = product_url
+        
+    print(f"[*] Transformed URL for bulk extraction: {review_url}")
+    
+    # Fetch the HTML
+    raw_html = fetch_page_source(review_url)
+    soup = BeautifulSoup(raw_html, 'html.parser')
+    
+    extracted_data = []
+    
+    # --- PHASE 2: STRUCTURAL ANCHOR SCRAPING ---
+    print("\n[*] Initializing Structural Scraping...")
+    
+    # Step 1: Find the anchor text that appears above EVERY review.
+    # In Flipkart, this is usually the "Review for: [Specs]" line.
+    # We use a partial string match (compile) in case the specs change slightly.
+    import re 
+    anchor_blocks = soup.find_all(string=re.compile("Review for:"))
+    
+    print(f"[*] Found {len(anchor_blocks)} structural anchors on page 1.")
+    
+    for anchor in anchor_blocks:
+        try:
+            # The 'Review for: ...' text is our anchor.
+            parent_div = anchor.parent
+            
+            # 1. Extract the Text (The block AFTER the anchor)
+            review_text_div = parent_div.find_next_sibling('div')
+            if not review_text_div:
+                continue # Skip if the structure is broken
+                
+            review_text = review_text_div.get_text(strip=True)
+            
+            # 2. Extract the Rating (The block BEFORE the anchor)
+            rating_div = parent_div.find_previous_sibling('div')
+            rating = "N/A"
+            
+            if rating_div:
+                # This pulls all text in the top row, e.g., "4.0 • Very Good"
+                rating_text = rating_div.get_text(separator=" ", strip=True)
+                
+                # Use Regex to isolate just the first number it sees (e.g., "4.0" or "5")
+                match = re.search(r'(\d(\.\d)?)', rating_text)
+                if match:
+                    rating = match.group(1)
+            
+            extracted_data.append({
+                "platform": "Flipkart",
+                "rating": rating,
+                "text": review_text
+            })
+            
+        except Exception as e:
+            print(f"[!] Warning: Structural shift detected on a block. Skipping. ({e})")
+        
+    return extracted_data
 
 # --- Test Execution ---
 if __name__ == "__main__":
-    # We will use a generic test URL first before targeting specific products
-    test_url = "https://example.com" 
-    raw_html = fetch_page_source(test_url)
+    # The HP Victus test link
+    test_url = "https://www.flipkart.com/hp-victus-intel-core-i5-13th-gen-13420-h-16-gb-512-gb-ssd-windows-11-home-6-graphics-nvidia-geforce-rtx-3050-15-fa2196tx-gaming-laptop/p/itm44c5abe672c87?pid=COMHGWQESQN4BAHV"
     
-    soup = BeautifulSoup(raw_html, 'html.parser')
-    print("\n--- Page Title Extracted ---")
-    print(soup.title.text)
+    print("--- Starting Flipkart Extraction Engine ---")
+    reviews = parse_flipkart_reviews(test_url)
+    
+    print("\n--- Extraction Results ---")
+    for i, review in enumerate(reviews, 1):
+        print(f"\nReview {i}:")
+        print(f"Stars: {review['rating']}")
+        print(f"Text: {review['text'][:100]}...") # Printing just the first 100 characters so it doesn't flood your terminal
