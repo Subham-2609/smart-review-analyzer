@@ -1,4 +1,5 @@
 import time
+import re   
 import random
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -35,67 +36,82 @@ def fetch_page_source(url):
     finally:
         driver.quit()
 
-def parse_flipkart_reviews(product_url):
-    """Transforms URL and extracts reviews using Structural Anchors."""
+
+def parse_flipkart_reviews(product_url, max_pages=3):
+    """Transforms URL and extracts paginated reviews using a Persistent Session."""
     
     if "/p/" in product_url:
-        review_url = product_url.replace("/p/", "/product-reviews/")
+        base_review_url = product_url.replace("/p/", "/product-reviews/")
     else:
-        review_url = product_url
+        base_review_url = product_url
         
-    print(f"[*] Transformed URL for bulk extraction: {review_url}")
-    
-    # Fetch the HTML
-    raw_html = fetch_page_source(review_url)
-    soup = BeautifulSoup(raw_html, 'html.parser')
-    
+    print(f"[*] Base URL for extraction: {base_review_url}")
     extracted_data = []
     
-    # --- PHASE 2: STRUCTURAL ANCHOR SCRAPING ---
-    print("\n[*] Initializing Structural Scraping...")
+    print("\n[*] Booting up persistent browser session...")
+    # 1. We boot the driver ONCE before the loop begins
+    driver = setup_driver() 
     
-    # Step 1: Find the anchor text that appears above EVERY review.
-    # In Flipkart, this is usually the "Review for: [Specs]" line.
-    # We use a partial string match (compile) in case the specs change slightly.
-    import re 
-    anchor_blocks = soup.find_all(string=re.compile("Review for:"))
-    
-    print(f"[*] Found {len(anchor_blocks)} structural anchors on page 1.")
-    
-    for anchor in anchor_blocks:
-        try:
-            # The 'Review for: ...' text is our anchor.
-            parent_div = anchor.parent
+    try:
+        # --- PHASE 3: THE PAGINATION LOOP ---
+        for page_num in range(1, max_pages + 1):
+            print(f"\n--- Scraping Page {page_num} of {max_pages} ---")
             
-            # 1. Extract the Text (The block AFTER the anchor)
-            review_text_div = parent_div.find_next_sibling('div')
-            if not review_text_div:
-                continue # Skip if the structure is broken
+            if "?" in base_review_url:
+                page_url = f"{base_review_url}&page={page_num}"
+            else:
+                page_url = f"{base_review_url}?page={page_num}"
                 
-            review_text = review_text_div.get_text(strip=True)
+            # 2. Human-like delay before clicking to the next page
+            delay = random.uniform(2.0, 4.0)
+            print(f"[+] Pacing request. Waiting {delay:.2f} seconds...")
+            time.sleep(delay)
             
-            # 2. Extract the Rating (The block BEFORE the anchor)
-            rating_div = parent_div.find_previous_sibling('div')
-            rating = "N/A"
+            # 3. Fetch the page using the SAME persistent browser tab
+            driver.get(page_url)
+            time.sleep(3) # Wait for React/JS to render
             
-            if rating_div:
-                # This pulls all text in the top row, e.g., "4.0 • Very Good"
-                rating_text = rating_div.get_text(separator=" ", strip=True)
+            soup = BeautifulSoup(driver.page_source, 'html.parser')
+            anchor_blocks = soup.find_all(string=re.compile("Review for:"))
+            print(f"[*] Found {len(anchor_blocks)} structural anchors on page {page_num}.")
+            
+            if len(anchor_blocks) == 0:
+                print("[*] No reviews found or bot-wall hit. Stopping pagination.")
+                break 
                 
-                # Use Regex to isolate just the first number it sees (e.g., "4.0" or "5")
-                match = re.search(r'(\d(\.\d)?)', rating_text)
-                if match:
-                    rating = match.group(1)
+            for anchor in anchor_blocks:
+                try:
+                    parent_div = anchor.parent
+                    
+                    # Extract Text
+                    review_text_div = parent_div.find_next_sibling('div')
+                    if not review_text_div:
+                        continue 
+                    review_text = review_text_div.get_text(strip=True)
+                    
+                    # Extract Rating
+                    rating_div = parent_div.find_previous_sibling('div')
+                    rating = "N/A"
+                    if rating_div:
+                        rating_text = rating_div.get_text(separator=" ", strip=True)
+                        match = re.search(r'(\d(\.\d)?)', rating_text)
+                        if match:
+                            rating = match.group(1)
+                    
+                    extracted_data.append({
+                        "platform": "Flipkart",
+                        "rating": rating,
+                        "text": review_text
+                    })
+                    
+                except Exception as e:
+                    print(f"[!] Warning: Structural shift detected on a block. Skipping. ({e})")
+                    
+    finally:
+        # 4. We securely close the browser only AFTER all pages are scraped
+        driver.quit()
+        print("\n[+] Browser session closed securely.")
             
-            extracted_data.append({
-                "platform": "Flipkart",
-                "rating": rating,
-                "text": review_text
-            })
-            
-        except Exception as e:
-            print(f"[!] Warning: Structural shift detected on a block. Skipping. ({e})")
-        
     return extracted_data
 
 # --- Test Execution ---
